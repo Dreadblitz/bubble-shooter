@@ -1,36 +1,71 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MediaPipe Hand Detection Demo
+
+Real-time hand tracking demo using MediaPipe and Next.js with a modern UI.
+
+## Features
+
+- Real-time hand detection with 21 landmarks per hand
+- Support for up to 2 hands simultaneously
+- Color-coded finger visualization
+- FPS counter and statistics panel
+- Toggle connections and landmarks visibility
+- Responsive design (desktop + tablet)
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Framework | Next.js 16 (App Router) |
+| Language | TypeScript |
+| Styling | Tailwind CSS |
+| ML | @mediapipe/tasks-vision |
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+# Install dependencies
+npm install
+
+# Run development server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+
+# Build for production
+npm run build
+npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Usage
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Click **Start Detection** to enable camera and hand tracking
+2. Show your hands to the camera
+3. Toggle **Show Connections** / **Show Landmarks** in Controls panel
+4. View real-time statistics in Stats panel
 
-## Learn More
+## Project Structure
 
-To learn more about Next.js, take a look at the following resources:
+```
+src/
+├── app/
+│   └── page.tsx          # Main page component
+├── components/
+│   ├── Controls.tsx      # Control panel UI
+│   ├── HandCanvas.tsx    # Canvas overlay for landmarks
+│   └── Stats.tsx         # Statistics display
+├── hooks/
+│   ├── useCamera.ts      # Webcam access hook
+│   └── useHandDetection.ts # MediaPipe integration hook
+└── types/
+    └── hand-detection.ts # TypeScript types
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Requirements
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Modern browser with WebGL support
+- Camera access permission
+- Works best on desktop/laptop with webcam
 
-## Deploy on Vercel
+## License
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+MIT
