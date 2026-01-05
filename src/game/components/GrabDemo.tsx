@@ -3,6 +3,17 @@
 import { useRef, useEffect, useCallback, RefObject } from 'react';
 import type { DetectedHand } from '@/types/hand-detection';
 
+// Bubble Shooter imports
+import type { Bubble, BubbleColor, GameConfig } from '../types';
+import { NEON_COLORS } from '../types';
+import {
+  findMatches,
+  removeMatches,
+  findFloatingBubbles,
+  createBubble,
+} from '../engine/grid';
+import { updateProjectile } from '../engine/physics';
+
 // =============================================================================
 // TYPES
 // =============================================================================
@@ -32,9 +43,6 @@ interface GrabDemoProps {
 const CANVAS_WIDTH = 500;
 const CANVAS_HEIGHT = 750;
 const FLOOR_Y = CANVAS_HEIGHT * 0.78; // Floor at 22% from bottom
-const BALL_RADIUS = 25;
-const GRAVITY = 0.5;
-const BOUNCE_DAMPING = 0.7;
 const GRAB_THRESHOLD = 0.08; // Strict threshold to START grabbing
 const RELEASE_THRESHOLD = 0.18; // Permissive threshold to RELEASE (hysteresis)
 const GRAB_DISTANCE = 80; // Pixels - how close pinch must be to ball to grab it
@@ -42,13 +50,12 @@ const RELEASE_FRAMES = 3; // Frames without pinch required to release
 
 // UX Enhancement constants
 const POSITION_SMOOTHING = 0.4; // 0 = no smoothing, 1 = instant (0.3-0.5 feels natural)
-const THROW_VELOCITY_SCALE = 0.8; // Scale factor for throw momentum
 const POSITION_HISTORY_SIZE = 5; // Frames of position history for velocity calculation
 const PROXIMITY_GLOW_DISTANCE = 150; // Distance for proximity visual feedback
 
 // Slingshot constants (Angry Birds style)
 const SLINGSHOT_ANCHOR_X = CANVAS_WIDTH / 2; // Center anchor point X
-const SLINGSHOT_ANCHOR_Y = FLOOR_Y - BALL_RADIUS; // Anchor point on floor line
+const SLINGSHOT_ANCHOR_Y = FLOOR_Y - 22; // Anchor point on floor line (adjusted for bubble radius)
 const SLINGSHOT_FORCE = 0.20; // Force multiplier for catapult effect
 const SLINGSHOT_MAX_VELOCITY = 45; // Cap maximum slingshot velocity
 const SLINGSHOT_RELEASE_THRESHOLD = 0.10; // More sensitive release when in slingshot zone
@@ -56,6 +63,11 @@ const SLINGSHOT_RELEASE_FRAMES = 2; // Requires 2 consistent frames to release
 const OPENING_VELOCITY_THRESHOLD = 0.035; // Velocity-based release (higher = less false positives)
 const VELOCITY_HISTORY_SIZE = 3; // Frames to average for velocity smoothing
 const SLINGSHOT_MAX_PULL = 200; // Maximum pull distance from anchor
+
+// Launch angle restriction (Angry Birds style - only upward shots)
+// 30 degrees = allows shooting in a 120 degree cone upward
+const MIN_LAUNCH_ANGLE = 30 * (Math.PI / 180); // 30 degrees in radians
+const TRAJECTORY_LENGTH_MULTIPLIER = 1.5; // Multiplier for trajectory preview line
 
 // One Euro Filter parameters (for finger indicator smoothing)
 const FILTER_MIN_CUTOFF = 1.0; // Stability when still (lower = smoother)
@@ -66,6 +78,87 @@ const FILTER_D_CUTOFF = 1.0; // Derivative cutoff
 const FINGER_OPACITY_LERP = 0.12; // Speed of fade in/out (lower = smoother)
 const FINGER_POSITION_LERP = 0.35; // Additional visual position smoothing
 const FINGER_PERSISTENCE_FRAMES = 8; // Frames to keep showing after losing tracking
+
+// Bubble Shooter constants
+const BUBBLE_RADIUS = 22;
+const GRID_COLUMNS = 9;
+const DANGER_LINE_Y = FLOOR_Y - 100;
+const BALL_RADIUS = BUBBLE_RADIUS;
+
+// Limited colors (only 4)
+const LIMITED_COLORS: BubbleColor[] = ['red', 'blue', 'green', 'yellow'];
+
+// Get random color from limited set
+function getRandomColor(): BubbleColor {
+  return LIMITED_COLORS[Math.floor(Math.random() * LIMITED_COLORS.length)];
+}
+
+// Clamp launch angle to prevent downward or too-lateral shots
+// Returns the clamped launch direction vector (in launch direction, not pull direction)
+function clampLaunchAngle(pullX: number, pullY: number): { x: number; y: number } {
+  // The shot is in the OPPOSITE direction to the pull
+  const launchX = -pullX;
+  const launchY = -pullY;
+
+  // If the shot goes downward (launchY > 0), restrict it
+  if (launchY >= 0) {
+    // Force upward with minimum angle
+    const magnitude = Math.sqrt(launchX * launchX + launchY * launchY);
+    const sign = launchX >= 0 ? 1 : -1;
+    return {
+      x: sign * Math.cos(MIN_LAUNCH_ANGLE) * magnitude,
+      y: -Math.sin(MIN_LAUNCH_ANGLE) * magnitude,
+    };
+  }
+
+  // Calculate current angle (from horizontal upward)
+  const angle = Math.atan2(-launchY, Math.abs(launchX));
+
+  // If angle is less than minimum, adjust
+  if (angle < MIN_LAUNCH_ANGLE) {
+    const magnitude = Math.sqrt(launchX * launchX + launchY * launchY);
+    const sign = launchX >= 0 ? 1 : -1;
+    return {
+      x: sign * Math.cos(MIN_LAUNCH_ANGLE) * magnitude,
+      y: -Math.sin(MIN_LAUNCH_ANGLE) * magnitude,
+    };
+  }
+
+  return { x: launchX, y: launchY };
+}
+
+// Game config adapted to existing canvas
+const GAME_CONFIG: GameConfig = {
+  canvasWidth: CANVAS_WIDTH,
+  canvasHeight: CANVAS_HEIGHT,
+  gridColumns: GRID_COLUMNS,
+  bubbleRadius: BUBBLE_RADIUS,
+  launcherY: SLINGSHOT_ANCHOR_Y,
+  dangerLineY: DANGER_LINE_Y,
+  newRowIntervalMs: 15000,
+  projectileSpeed: 14,
+  pinchThreshold: 0.08,
+  minPullDistance: 20,
+};
+
+// Create initial grid with limited colors
+function createInitialGridLimited(rows: number, config: GameConfig): Bubble[] {
+  const bubbles: Bubble[] = [];
+
+  for (let row = 0; row < rows; row++) {
+    const isOffsetRow = row % 2 === 1;
+    const cols = config.gridColumns - (isOffsetRow ? 1 : 0);
+
+    for (let col = 0; col < cols; col++) {
+      // Random chance to have a bubble (80%)
+      if (Math.random() < 0.8) {
+        bubbles.push(createBubble(row, col, getRandomColor(), config));
+      }
+    }
+  }
+
+  return bubbles;
+}
 
 // =============================================================================
 // ONE EURO FILTER (reduces jitter while maintaining responsiveness)
@@ -220,8 +313,46 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
     frameCount: 0,
   });
 
-  // Reset ball position and filters
-  const resetBall = useCallback(() => {
+  // Bubble grid state
+  const bubblesRef = useRef<Bubble[]>([]);
+  const nextBubbleColorRef = useRef<BubbleColor>(getRandomColor());
+  const scoreRef = useRef(0);
+  const isProjectileActiveRef = useRef(false);
+
+  // Handle projectile collision with grid
+  const handleProjectileCollision = useCallback((gridPos: { row: number; col: number }) => {
+    const color = nextBubbleColorRef.current;
+    const newBubble = createBubble(gridPos.row, gridPos.col, color, GAME_CONFIG);
+    bubblesRef.current = [...bubblesRef.current, newBubble];
+
+    // Find matches
+    const matches = findMatches(bubblesRef.current, gridPos.row, gridPos.col, color);
+    let scoreGain = 0;
+
+    if (matches.length >= 3) {
+      bubblesRef.current = removeMatches(bubblesRef.current, matches);
+      scoreGain += matches.length * 10;
+
+      // Remove orphan bubbles
+      const floating = findFloatingBubbles(bubblesRef.current);
+      if (floating.length > 0) {
+        bubblesRef.current = removeMatches(bubblesRef.current, floating);
+        scoreGain += floating.length * 20;
+      }
+    }
+
+    scoreRef.current += scoreGain;
+
+    // Reset for next shot
+    isProjectileActiveRef.current = false;
+    nextBubbleColorRef.current = getRandomColor();
+    ballRef.current.position = { x: SLINGSHOT_ANCHOR_X, y: SLINGSHOT_ANCHOR_Y };
+    ballRef.current.velocity = { x: 0, y: 0 };
+    hasLaunchedRef.current = false;
+  }, []);
+
+  // Reset game and initialize grid
+  const resetGame = useCallback(() => {
     ballRef.current = {
       position: { x: SLINGSHOT_ANCHOR_X, y: SLINGSHOT_ANCHOR_Y },
       velocity: { x: 0, y: 0 },
@@ -239,6 +370,11 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
     thumbFilterY.current.reset();
     indexFilterX.current.reset();
     indexFilterY.current.reset();
+    // Initialize bubble grid
+    bubblesRef.current = createInitialGridLimited(5, GAME_CONFIG);
+    nextBubbleColorRef.current = getRandomColor();
+    scoreRef.current = 0;
+    isProjectileActiveRef.current = false;
   }, []);
 
   // Main game loop
@@ -348,13 +484,22 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
             const pullDistance = Math.sqrt(pullX * pullX + pullY * pullY);
 
             if (pullDistance > 10) { // Minimum pull distance to launch
-              // Launch direction is OPPOSITE to pull direction
+              // Apply angle clamping to restrict to upward shots only
+              const clampedLaunch = clampLaunchAngle(pullX, pullY);
+              const clampedMagnitude = Math.sqrt(clampedLaunch.x ** 2 + clampedLaunch.y ** 2);
+
               // Velocity magnitude proportional to pull distance
               const launchForce = Math.min(pullDistance, SLINGSHOT_MAX_PULL) * SLINGSHOT_FORCE;
 
-              // Normalize and apply force in opposite direction
-              ball.velocity.x = (-pullX / pullDistance) * launchForce;
-              ball.velocity.y = (-pullY / pullDistance) * launchForce;
+              // Apply force using clamped direction
+              if (clampedMagnitude > 0) {
+                ball.velocity.x = (clampedLaunch.x / clampedMagnitude) * launchForce;
+                ball.velocity.y = (clampedLaunch.y / clampedMagnitude) * launchForce;
+              } else {
+                // Fallback: straight up
+                ball.velocity.x = 0;
+                ball.velocity.y = -launchForce;
+              }
 
               // Cap velocity
               const speed = Math.sqrt(ball.velocity.x ** 2 + ball.velocity.y ** 2);
@@ -367,8 +512,9 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
               ball.position.x = SLINGSHOT_ANCHOR_X;
               ball.position.y = SLINGSHOT_ANCHOR_Y;
 
-              // Mark as launched
+              // Mark as launched and activate projectile mode
               hasLaunchedRef.current = true;
+              isProjectileActiveRef.current = true;
             } else {
               // Not enough pull - just snap back to anchor
               ball.position.x = SLINGSHOT_ANCHOR_X;
@@ -410,35 +556,28 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
       // PHYSICS (when not grabbed)
       // ===========================================
       if (!ball.isGrabbed) {
-        // Apply gravity
-        ball.velocity.y += GRAVITY;
+        if (isProjectileActiveRef.current) {
+          // BUBBLE SHOOTER MODE: no gravity, lateral bounces
+          const result = updateProjectile(
+            {
+              position: ball.position,
+              velocity: ball.velocity,
+              color: nextBubbleColorRef.current,
+              radius: BUBBLE_RADIUS,
+            },
+            GAME_CONFIG,
+            bubblesRef.current
+          );
 
-        // Update position
-        ball.position.x += ball.velocity.x;
-        ball.position.y += ball.velocity.y;
-
-        // Bounce off walls
-        if (ball.position.x - ball.radius < 0) {
-          ball.position.x = ball.radius;
-          ball.velocity.x = -ball.velocity.x * BOUNCE_DAMPING;
+          if (result.collision) {
+            // Collision detected - add bubble to grid
+            handleProjectileCollision(result.collision);
+          } else if (result.projectile) {
+            ball.position = result.projectile.position;
+            ball.velocity = result.projectile.velocity;
+          }
         }
-        if (ball.position.x + ball.radius > CANVAS_WIDTH) {
-          ball.position.x = CANVAS_WIDTH - ball.radius;
-          ball.velocity.x = -ball.velocity.x * BOUNCE_DAMPING;
-        }
-
-        // Bounce off floor (at FLOOR_Y, 1/3 from bottom)
-        if (ball.position.y + ball.radius > FLOOR_Y) {
-          ball.position.y = FLOOR_Y - ball.radius;
-          ball.velocity.y = -ball.velocity.y * BOUNCE_DAMPING;
-          ball.velocity.x *= 0.95; // Friction
-        }
-
-        // Bounce off ceiling
-        if (ball.position.y - ball.radius < 0) {
-          ball.position.y = ball.radius;
-          ball.velocity.y = -ball.velocity.y * BOUNCE_DAMPING;
-        }
+        // When not active projectile, ball stays at anchor (no gravity applied)
       }
 
       // ===========================================
@@ -447,6 +586,57 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
       // Clear canvas
       ctx.fillStyle = '#0a0a0f';
       ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+      // Draw bubble grid FIRST (before everything else)
+      bubblesRef.current.forEach(bubble => {
+        const colors = NEON_COLORS[bubble.color];
+
+        // Glow
+        ctx.shadowColor = colors.glow;
+        ctx.shadowBlur = 12;
+
+        // Gradient
+        const gradient = ctx.createRadialGradient(
+          bubble.position.x - bubble.radius * 0.3,
+          bubble.position.y - bubble.radius * 0.3,
+          0,
+          bubble.position.x,
+          bubble.position.y,
+          bubble.radius
+        );
+        gradient.addColorStop(0, colors.glow);
+        gradient.addColorStop(0.7, colors.fill);
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0.3)');
+
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(bubble.position.x, bubble.position.y, bubble.radius - 1, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Highlight
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.beginPath();
+        ctx.arc(
+          bubble.position.x - bubble.radius * 0.3,
+          bubble.position.y - bubble.radius * 0.3,
+          bubble.radius * 0.25,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+      });
+      ctx.shadowBlur = 0;
+
+      // Draw danger line
+      ctx.strokeStyle = 'rgba(255, 50, 50, 0.4)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([10, 10]);
+      ctx.beginPath();
+      ctx.moveTo(0, DANGER_LINE_Y);
+      ctx.lineTo(CANVAS_WIDTH, DANGER_LINE_Y);
+      ctx.stroke();
+      ctx.setLineDash([]);
 
       // Draw floor line (at 1/3 from bottom)
       ctx.strokeStyle = '#444466';
@@ -532,10 +722,18 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
         ctx.stroke();
         ctx.shadowBlur = 0;
 
-        // Draw trajectory preview (dotted line showing launch direction)
-        const launchDirX = -((ball.position.x - SLINGSHOT_ANCHOR_X) / pullDistRender);
-        const launchDirY = -((ball.position.y - SLINGSHOT_ANCHOR_Y) / pullDistRender);
-        const previewLength = Math.min(pullDistRender * 0.8, 100);
+        // Draw trajectory preview (dotted line showing launch direction with angle clamping)
+        const pullX = ball.position.x - SLINGSHOT_ANCHOR_X;
+        const pullY = ball.position.y - SLINGSHOT_ANCHOR_Y;
+
+        // Apply angle clamping to get the corrected launch direction
+        const clampedLaunch = clampLaunchAngle(pullX, pullY);
+        const clampedMagnitude = Math.sqrt(clampedLaunch.x ** 2 + clampedLaunch.y ** 2);
+        const launchDirX = clampedMagnitude > 0 ? clampedLaunch.x / clampedMagnitude : 0;
+        const launchDirY = clampedMagnitude > 0 ? clampedLaunch.y / clampedMagnitude : -1;
+
+        // Longer preview line, proportional to pull distance
+        const previewLength = pullDistRender * TRAJECTORY_LENGTH_MULTIPLIER;
 
         ctx.strokeStyle = `rgba(255, 255, 255, ${0.3 + tension * 0.4})`;
         ctx.lineWidth = 2;
@@ -630,9 +828,10 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
         ctx.stroke();
       }
 
-      // Draw ball
-      const ballColor = ball.isGrabbed ? '#00ff00' : '#ff6600';
-      const glowColor = ball.isGrabbed ? '#00ff00' : '#ff9933';
+      // Draw ball with next bubble color
+      const currentBubbleColors = NEON_COLORS[nextBubbleColorRef.current];
+      const ballColor = ball.isGrabbed ? '#00ff00' : currentBubbleColors.fill;
+      const glowColor = ball.isGrabbed ? '#00ff00' : currentBubbleColors.glow;
 
       // Glow effect (enhanced when grabbed or near)
       ctx.shadowColor = glowColor;
@@ -643,7 +842,7 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
       const displayRadius = ball.radius * scaleBonus;
 
       // Ball gradient
-      const gradient = ctx.createRadialGradient(
+      const ballGradient = ctx.createRadialGradient(
         ball.position.x - displayRadius * 0.3,
         ball.position.y - displayRadius * 0.3,
         0,
@@ -651,12 +850,12 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
         ball.position.y,
         displayRadius
       );
-      gradient.addColorStop(0, ball.isGrabbed ? '#66ff66' : '#ffcc66');
-      gradient.addColorStop(1, ballColor);
+      ballGradient.addColorStop(0, ball.isGrabbed ? '#66ff66' : currentBubbleColors.glow);
+      ballGradient.addColorStop(1, ballColor);
 
       ctx.beginPath();
       ctx.arc(ball.position.x, ball.position.y, displayRadius, 0, Math.PI * 2);
-      ctx.fillStyle = gradient;
+      ctx.fillStyle = ballGradient;
       ctx.fill();
 
       ctx.shadowBlur = 0;
@@ -679,6 +878,15 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
           ctx.setLineDash([]);
         }
       }
+
+      // Draw score
+      ctx.font = 'bold 24px monospace';
+      ctx.fillStyle = '#00ffff';
+      ctx.shadowColor = '#00ffff';
+      ctx.shadowBlur = 10;
+      ctx.textAlign = 'left';
+      ctx.fillText(`SCORE: ${scoreRef.current}`, 15, 35);
+      ctx.shadowBlur = 0;
 
       // Draw hand indicators with visual smoothing (fade in/out, persistence, lerp)
       const fvs = fingerVisualState.current;
@@ -756,14 +964,14 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
     animationId = requestAnimationFrame(gameLoop);
 
     return () => cancelAnimationFrame(animationId);
-  }, [isRunning, handsRef, videoRef]);
+  }, [isRunning, handsRef, videoRef, handleProjectileCollision]);
 
   // Reset on start
   useEffect(() => {
     if (isRunning) {
-      resetBall();
+      resetGame();
     }
-  }, [isRunning, resetBall]);
+  }, [isRunning, resetGame]);
 
   return (
     <div className="relative" style={{ width: CANVAS_WIDTH, height: CANVAS_HEIGHT }}>
@@ -780,7 +988,7 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
       {/* Reset button */}
       {isRunning && (
         <button
-          onClick={resetBall}
+          onClick={resetGame}
           className="absolute top-3 right-3 px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white text-sm font-medium rounded-lg transition-colors shadow-lg"
         >
           Reset
@@ -791,7 +999,7 @@ export function GrabDemo({ handsRef, isRunning, videoRef }: GrabDemoProps) {
       {!isRunning && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/80 rounded-xl">
           <div className="text-center">
-            <h2 className="text-2xl font-bold text-orange-400 mb-2">SLINGSHOT</h2>
+            <h2 className="text-2xl font-bold text-orange-400 mb-2">BUBBLE SHOOTER</h2>
             <p className="text-gray-400">Start detection to play</p>
           </div>
         </div>
